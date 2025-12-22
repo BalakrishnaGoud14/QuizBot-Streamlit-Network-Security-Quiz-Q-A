@@ -1,221 +1,280 @@
-import warnings
-warnings.filterwarnings("ignore")
-from langchain_community.vectorstores import Chroma
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.llms.ollama import Ollama
-from get_embedding_function import get_embedding_function
-
-from prompt_templates import *
-
-import random
-
-#test
-from langchain_community.document_loaders.pdf import PyPDFDirectoryLoader
-from langchain_core.prompts import ChatPromptTemplate
-
-# Load PDFs directly from your local folder
-DATA_PATH = "data"
-
-def query_rag(query_text: str):
-    # Step 1: Load PDFs
-    loader = PyPDFDirectoryLoader(DATA_PATH)
-    documents = loader.load()
-
-    # Step 2: Combine all text 
-    context_text = "\n\n---\n\n".join([doc.page_content for doc in documents])
-    #print(context_text)
-    question=query_text
-    context=context_text
-    # Step 3: Create the prompt
-    prompt_template = ChatPromptTemplate.from_template("""
-    You are a helpful tutor. Use the following context to answer the question.
-
-    Context:
-    {context}
-
-    Question: {question}
-
-    Answer:
-    """)
-    prompt = prompt_template.format(context=context_text, question=query_text)
-
-    # Step 4: Get answer from your LLM
-    response = model.invoke(prompt)
-    print(response)
-
-
-
-# Global list of topics
-TOPICS = [
-    "OSI architecture",
-    "Symmetric Encryption",
-    "Rijndael",
-    "Entropy",
-    "Pseudorandom Number Generator",
-    "Block and Stream Ciphers",
-    "RC4 Stream Cipher",
-    "Public-Key Cryptography",
-    "RSA",
-    "Attack approaches - page 159(merged pdf)",
-    "Homomorphic encryption",
-    "Message authentication - page 166(merged pdf)",
-    "Hash functions and Requirements for secure hash functions",
-    "Secure Hash Function",
-    "Length Extension Attacks",
-    "Message Authentication Code",
-    "HMAC",
-    "Authenticated Encryption",
-    "TLS 1.0 “Lucky 13” Attack",
-    "Digital Signatures",
-    "Hybrid Encryption",
-    "symmetric key distribution",
-    "Diffie-Hellman Key Exchange"
-]
-
-CHROMA_PATH = "chroma"
-
-model = Ollama(model="llama3.2:latest")
-embedding_function = get_embedding_function()
-db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
-
-"""def query_rag(query_text: str):
-    results = db.similarity_search_with_score(query_text, k=7)
-    #test
-    '''
-    for doc, score in results:
-        print(doc.metadata["source"], score)
-        print(doc.page_content[:200], "\n---\n")
-    '''
-    #test
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    prompt_template = ChatPromptTemplate.from_template(OPEN_ENDED_QUESTION_PROMPT)
-    prompt = prompt_template.format(context=context_text, question=query_text)
-    response_text = model.invoke(prompt)
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
-    return response_text
 """
-    
-def openQs(que):
-    query_rag(que)
+nsrag/rag.py (updated)
 
-def quizMCQ():
-    print("Generating a general MCQ Quiz: ")
-    # Randomly select two topics
-    selected_topics = random.sample(TOPICS, 2)
-    dbQuery = f"Give me a set of multiple-choice questions on {', '.join(selected_topics)}."
-    results = db.similarity_search_with_score(dbQuery, k=7)
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    
-    prompt_template = ChatPromptTemplate.from_template(QUIZ_MCQ_GENERAL_PROMPT)
-    prompt = prompt_template.format(context=context_text)
-    response_text = model.invoke(prompt)
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+- Full RAG with sentence-transformers embeddings stored locally
+- Uses Ollama for generation (local: ollama serve)
+- Uses DuckDuckGo free HTML search for web results (no API key required)
+- Returns line-level PDF citations (filename, page, start_line-end_line)
+- Persistent vector store under nsrag/vstore/
+- Requirements: sentence-transformers, numpy, PyPDF2, requests, beautifulsoup4, langchain-community
+"""
 
-    askAns = '''\nGive your answers for each question like this: 1. A 2. B 3. C 4. D 5. A\n'''
-    usrAns = input(askAns)
-    eval_prompt_template = ChatPromptTemplate.from_template(EVAL_QUIZ_MCQ_GENERAL_PROMPT)
-    eval_prompt = eval_prompt_template.format(context=context_text, questions=formatted_response, usrAns=usrAns)
-    response_text = model.invoke(eval_prompt)
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+import os
+import json
+import pathlib
+import hashlib
+import numpy as np
+from typing import List, Dict, Tuple, Optional
+import re
+import requests
+from io import BytesIO
 
+# PDF reading
+import PyPDF2
 
-def quizTF():
-    print("Generating a general T/F Quiz: ")
-    # Randomly select two topics
-    selected_topics = random.sample(TOPICS, 2)
-    dbQuery = f"Give me a set of true/false questions on {', '.join(selected_topics)}."
-    results = db.similarity_search_with_score(dbQuery, k=7)
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    
-    prompt_template = ChatPromptTemplate.from_template(QUIZ_TF_GENERAL_PROMPT)
-    prompt = prompt_template.format(context=context_text)
-    response_text = model.invoke(prompt)
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+# HTML parsing for DuckDuckGo
+from bs4 import BeautifulSoup
 
-    askAns = '''\nGive your answers for each question like this: 1. True 2. False 3. True 4. False 5. True\n'''
-    usrAns = input(askAns)
-    eval_prompt_template = ChatPromptTemplate.from_template(EVAL_QUIZ_TF_GENERAL_PROMPT)
-    eval_prompt = eval_prompt_template.format(context=context_text, questions=formatted_response, usrAns=usrAns)
-    response_text = model.invoke(eval_prompt)
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+# Embeddings model (sentence-transformers)
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception as e:
+    raise RuntimeError("Missing dependency: sentence-transformers. Install with `pip install sentence-transformers`") from e
 
+# Ollama LLM wrapper via langchain_community
+try:
+    from langchain_community.llms import Ollama
+except Exception as e:
+    raise RuntimeError("Missing dependency: langchain-community (for Ollama). Install accordingly.") from e
 
-def quizMCQByTopic(topic):
-    print("Generating MCQ Quiz on " + topic)
-    dbQuery = "Give me information about " + topic
-    results = db.similarity_search_with_score(dbQuery, k=7)
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    
-    prompt_template = ChatPromptTemplate.from_template(QUIZ_MCQ_TOPIC_PROMPT)
-    prompt = prompt_template.format(context=context_text)
-    response_text = model.invoke(prompt)
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+# Globals / config
+DATA_DIR = pathlib.Path(__file__).parent / "data"
+VSTORE_DIR = pathlib.Path(__file__).parent / "vstore"
+VSTORE_DIR.mkdir(exist_ok=True)
+EMBED_MODEL_NAME = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")  # sentence-transformers model name
+EMBED_BATCH = 32
+TOP_K = 5
+MIN_SIMILARITY = 0.30  # threshold to consider PDF evidence reliable
+PERSIST_META = VSTORE_DIR / "metadata.json"
+PERSIST_EMB = VSTORE_DIR / "embeddings.npy"
 
-    askAns = '''\nGive your answers for each question like this: 1. A 2. B 3. C 4. D 5. A\n'''
-    usrAns = input(askAns)
-    eval_prompt_template = ChatPromptTemplate.from_template(EVAL_QUIZ_MCQ_TOPIC_PROMPT)
-    eval_prompt = eval_prompt_template.format(context=context_text, questions=formatted_response, usrAns=usrAns)
-    response_text = model.invoke(eval_prompt)
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+# Lazy globals
+_embed_model = None
+_ollama_model = None
 
-def quizTFByTopic(topic):
-    print("Generating T/F Quiz on " + topic)
-    dbQuery = "Give me information about " + topic
-    results = db.similarity_search_with_score(dbQuery, k=7)
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    
-    prompt_template = ChatPromptTemplate.from_template(QUIZ_TF_TOPIC_PROMPT)
-    prompt = prompt_template.format(context=context_text)
-    response_text = model.invoke(prompt)
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+    return _embed_model
 
-    askAns = '''\nGive your answers for each question like this: 1. True 2. False 3. True 4. False 5. True\n'''
-    usrAns = input(askAns)
-    eval_prompt_template = ChatPromptTemplate.from_template(EVAL_QUIZ_TF_TOPIC_PROMPT)
-    eval_prompt = eval_prompt_template.format(context=context_text, questions=formatted_response, usrAns=usrAns)
-    response_text = model.invoke(eval_prompt)
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
+def get_ollama_model():
+    global _ollama_model
+    if _ollama_model is None:
+        model_name = os.environ.get("OLLAMA_MODEL", "llama3.2:latest")
+        _ollama_model = Ollama(model=model_name)
+    return _ollama_model
 
+# Utilities
+def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
+        return 0.0
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
-if __name__ == "__main__":
-    while True:
-        menu = '''
-        1. Open ended questions\n 
-        2. Quiz MCQ\n 
-        3. Quiz MCQ by topic\n 
-        4. Quiz T/F\n 
-        5. Quiz T/F by topic\n 
-        6. Exit
-        '''
-        print(menu)
-        option = int(input("Select a mode: "))
-        if option == 6:
-            print("Bye")
-            break
-        elif option == 1:
-            que = input("What's your question?: ")
-            openQs(que)
-        elif option == 2:
-            quizMCQ()
-        elif option == 3:
-            topic = input("On which topic?: ")
-            quizMCQByTopic(topic)
-        elif option == 4:
-            quizTF()
-        elif option == 5:
-            topic = input("On which topic?: ")
-            quizTFByTopic(topic)
+def chunk_text_lines(text: str, max_chars: int = 800) -> List[Tuple[int,int,str]]:
+    """
+    Break page text into chunks of up to max_chars characters, preserving line boundaries.
+    Returns list of tuples (start_line_idx, end_line_idx, chunk_text) with 1-based line numbers.
+    """
+    lines = [re.sub(r'\s+', ' ', ln).strip() for ln in text.splitlines() if ln.strip()]
+    chunks = []
+    i = 0
+    while i < len(lines):
+        j = i + 1
+        while j < len(lines) and len(" ".join(lines[i:j+1])) <= max_chars:
+            j += 1
+        chunk = " ".join(lines[i:j])
+        chunks.append((i+1, j, chunk))
+        i = j
+    return chunks
+
+def load_pdfs_to_documents(pdf_dir: pathlib.Path = DATA_DIR) -> List[Dict]:
+    """
+    Read all PDFs from pdf_dir and produce document chunks with metadata:
+    { 'id', 'filename', 'page', 'start_line', 'end_line', 'text' }
+    """
+    docs = []
+    for pdf_path in sorted(pdf_dir.glob("*.pdf")):
+        try:
+            with open(pdf_path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                for page_idx, page in enumerate(reader.pages):
+                    raw = page.extract_text() or ""
+                    chunks = chunk_text_lines(raw)
+                    for start, end, chunk_text in chunks:
+                        doc_id = hashlib.sha1(f"{pdf_path.name}-{page_idx+1}-{start}-{end}".encode()).hexdigest()
+                        docs.append({
+                            "id": doc_id,
+                            "filename": pdf_path.name,
+                            "page": page_idx + 1,
+                            "start_line": start,
+                            "end_line": end,
+                            "text": chunk_text
+                        })
+        except Exception as e:
+            print(f"[rag] Failed to read {pdf_path}: {e}")
+            continue
+    return docs
+
+def build_vectorstore(force: bool = False) -> Dict:
+    """
+    Build embeddings for PDF chunks and persist them.
+    """
+    if PERSIST_META.exists() and PERSIST_EMB.exists() and not force:
+        meta = json.loads(PERSIST_META.read_text(encoding="utf-8"))
+        emb = np.load(str(PERSIST_EMB))
+        return {"meta": meta, "emb": emb}
+    docs = load_pdfs_to_documents(DATA_DIR)
+    if not docs:
+        meta = {"entries": []}
+        np.save(str(PERSIST_EMB), np.zeros((0, 768)))
+        PERSIST_META.write_text(json.dumps(meta), encoding="utf-8")
+        return {"meta": meta, "emb": np.zeros((0,768))}
+    texts = [d["text"] for d in docs]
+    model = get_embed_model()
+    embeddings = []
+    for i in range(0, len(texts), EMBED_BATCH):
+        batch = texts[i:i+EMBED_BATCH]
+        emb_batch = model.encode(batch, convert_to_numpy=True, show_progress_bar=False)
+        embeddings.append(emb_batch)
+    emb_array = np.vstack(embeddings)
+    meta = {"entries": docs}
+    PERSIST_META.write_text(json.dumps(meta), encoding="utf-8")
+    np.save(str(PERSIST_EMB), emb_array)
+    return {"meta": meta, "emb": emb_array}
+
+def load_vectorstore() -> Dict:
+    if PERSIST_META.exists() and PERSIST_EMB.exists():
+        meta = json.loads(PERSIST_META.read_text(encoding="utf-8"))
+        emb = np.load(str(PERSIST_EMB))
+        return {"meta": meta, "emb": emb}
+    else:
+        return build_vectorstore()
+
+def semantic_search(query: str, top_k: int = TOP_K) -> List[Tuple[Dict, float]]:
+    vs = load_vectorstore()
+    meta = vs["meta"]["entries"]
+    emb = vs["emb"]
+    if len(meta) == 0 or emb.shape[0] == 0:
+        return []
+    model = get_embed_model()
+    q_emb = model.encode([query], convert_to_numpy=True)[0]
+    sims = np.dot(emb, q_emb) / (np.linalg.norm(emb, axis=1) * (np.linalg.norm(q_emb)+1e-12))
+    sims = np.nan_to_num(sims)
+    idx_sorted = np.argsort(-sims)[:top_k]
+    results = []
+    for idx in idx_sorted:
+        results.append((meta[idx], float(sims[idx])))
+    return results
+
+# Free web search using DuckDuckGo HTML (no API key)
+def duckduckgo_search(query: str, num_results: int = 3) -> List[Tuple[str, str, str]]:
+    """
+    Returns list of tuples (title, url, snippet)
+    Uses the public DuckDuckGo HTML endpoint, parses result items.
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; QuizBot/1.0; +https://example.com)"}
+        resp = requests.post("https://duckduckgo.com/html/", data={"q": query}, headers=headers, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        results = []
+        # DuckDuckGo HTML uses result classes; try multiple selectors for robustness
+        for r in soup.select(".result")[:num_results]:
+            a = r.select_one("a.result__a") or r.select_one("a")
+            title = a.get_text(strip=True) if a else ""
+            link = a.get("href") if a else ""
+            snippet_el = r.select_one(".result__snippet") or r.select_one(".snippet") or r.select_one("a")
+            snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+            if link and link.startswith("/l/?kh="):
+                # DuckDuckGo sometimes returns redirect links; try to extract actual URL parameter 'uddg'
+                from urllib.parse import parse_qs, urlparse, unquote
+                qs = urlparse(link).query
+                parsed = parse_qs(qs)
+                if "uddg" in parsed:
+                    link = unquote(parsed["uddg"][0])
+            results.append((title, link, snippet))
+        # Fallback: try another selector
+        if not results:
+            for r in soup.select(".result__body")[:num_results]:
+                a = r.select_one("a.result__a") or r.select_one("a")
+                title = a.get_text(strip=True) if a else ""
+                link = a.get("href") if a else ""
+                snippet_el = r.select_one(".result__snippet")
+                snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                results.append((title, link, snippet))
+        return results[:num_results]
+    except Exception as e:
+        print(f"[duckduckgo] search failed: {e}")
+        return []
+
+def build_prompt(question: str, retrieved: List[Tuple[Dict,float]], web_results: List[Tuple[str,str,str]]) -> str:
+    pieces = []
+    if retrieved:
+        pieces.append("PDF evidence:")
+        for doc, score in retrieved:
+            txt = doc["text"]
+            pieces.append(f"---\nFile: {doc['filename']}\nPage: {doc['page']}\nLines: {doc['start_line']}-{doc['end_line']}\nSnippet: {txt}\n---\nSimilarity: {score:.3f}")
+    if web_results:
+        pieces.append("Web evidence:")
+        for title, url, snippet in web_results:
+            pieces.append(f"- {title} | {url}\n{snippet}")
+    context = "\n\n".join(pieces) if pieces else "No supporting documents found."
+    prompt = f"""You are a helpful and precise network-security assistant. Answer the question using the provided evidence. 
+If the answer is supported by the PDF snippets, explicitly cite them inline using the format [filename.pdf page X lines Y-Z]. 
+If the answer uses a web source, cite the URL inline in square brackets. 
+Be concise and provide step-by-step only if asked.
+
+Question:
+{question}
+
+Context:
+{context}
+
+If you cannot find a confident answer in the provided evidence, say so and offer suggestions for where to look next.
+"""
+    return prompt
+
+def answer_question(question: str, use_web: bool = False, top_k: int = TOP_K) -> Tuple[str, List[str]]:
+    """
+    Perform semantic search over indexed PDF chunks, optionally web lookup via DuckDuckGo, then call Ollama to answer.
+    Returns (answer_text, sources_list)
+    """
+    # ensure vectorstore built
+    vs = load_vectorstore()
+    retrieved = semantic_search(question, top_k=top_k)
+    sources = []
+    web_results = []
+    strong = [r for r in retrieved if r[1] >= MIN_SIMILARITY]
+    if not strong and use_web:
+        web_results = duckduckgo_search(question, num_results=5)
+    prompt = build_prompt(question, retrieved, web_results)
+    model = get_ollama_model()
+    try:
+        resp = model.invoke(prompt)
+    except Exception as e:
+        raise RuntimeError(f"Ollama invocation failed: {e}")
+    # Build sources list: PDF entries if available and above threshold; otherwise web urls
+    if retrieved:
+        for doc, score in retrieved:
+            if score >= MIN_SIMILARITY:
+                sources.append(f"{doc['filename']} (page {doc['page']}, lines {doc['start_line']}-{doc['end_line']})")
+    if not sources and web_results:
+        sources = [url for (_t, url, _s) in web_results if url]
+    return resp, sources
+
+# CLI helpers (for testing)
+if __name__ == '__main__':
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('--rebuild', action='store_true')
+    p.add_argument('--question', type=str, default=None)
+    args = p.parse_args()
+    if args.rebuild:
+        print('[rag] Building vectorstore...')
+        build_vectorstore(force=True)
+        print('[rag] Done.')
+    if args.question:
+        a, s = answer_question(args.question, use_web=True)
+        print('Answer:', a)
+        print('Sources:', s)

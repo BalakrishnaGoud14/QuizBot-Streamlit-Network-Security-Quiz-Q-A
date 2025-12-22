@@ -1,8 +1,85 @@
+# import streamlit as st
+# import os
+# import pathlib
+# import time
+# from nsrag.rag import answer_question, build_vectorstore
+
+# st.set_page_config(
+#     page_title="Network Security RAG",
+#     page_icon="🛡️",
+#     layout="wide"
+# )
+
+# # ---------------------- UI HEADER ----------------------
+# st.markdown("""
+# <h1 style="text-align:center; font-size:42px;">🛡️ Network Security RAG System</h1>
+# <p style="text-align:center; font-size:18px;">
+# Ask questions and get answers grounded in PDFs + optional web search.
+# </p>
+# """, unsafe_allow_html=True)
+
+# # ---------------------- SIDEBAR ----------------------
+# with st.sidebar:
+#     st.header(" Settings")
+
+#     use_web = st.checkbox("Enable Web Search (DuckDuckGo)", value=False)
+
+#     if st.button("Rebuild Vectorstore"):
+#         with st.spinner("Rebuilding vectorstore… This may take a while…"):
+#             build_vectorstore(force=True)
+#         st.success("Vectorstore rebuilt successfully!")
+
+#     st.markdown("---")
+#     st.markdown("### PDF Folder")
+#     st.write("All PDFs must be inside: `nsrag/data/`")
+
+# # ---------------------- MAIN AREA ----------------------
+# st.markdown("### Ask Your Question")
+
+# question = st.text_area(
+#     "Enter your question:",
+#     placeholder="e.g., Explain SYN flood attack, What is Firewall rule ordering, etc.",
+#     height=120
+# )
+
+# col1, col2 = st.columns([1, 4])
+# with col1:
+#     run_btn = st.button("Generate Answer", type="primary")
+
+# # ---------------------- RUN QUERY ----------------------
+# if run_btn:
+#     if not question.strip():
+#         st.error("Please type a question before running.")
+#         st.stop()
+
+#     with st.spinner("Thinking… querying PDFs…"):
+#         try:
+#             answer, sources = answer_question(question, use_web=use_web)
+#         except Exception as e:
+#             st.error(f" Error: {e}")
+#             st.stop()
+
+#     # ------------------- OUTPUT -------------------
+#     st.markdown("## Answer")
+#     st.write(answer)
+
+#     st.markdown("## Sources")
+#     if sources:
+#         for s in sources:
+#             st.markdown(f"- {s}")
+#     else:
+#         st.info("No strong PDF sources found. If web search is enabled, results may be from the web.")
+# else:
+#     st.info("Enter a question and click **Generate Answer**.")
+
+
 
 import streamlit as st
+import re
 import sys
 import warnings
 from pathlib import Path
+from nsrag.rag import answer_question, build_vectorstore
 
 warnings.filterwarnings("ignore")
 
@@ -135,6 +212,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+
 # Initialize session state
 if 'quiz_data' not in st.session_state:
     st.session_state.quiz_data = None
@@ -148,6 +227,10 @@ if 'parsed_questions' not in st.session_state:
     st.session_state.parsed_questions = []
 if 'correct_answers' not in st.session_state:
     st.session_state.correct_answers = {}
+if 'explanations' not in st.session_state:
+    st.session_state.explanations = {}  
+
+
 
 # Initialize model
 @st.cache_resource
@@ -204,8 +287,31 @@ def parse_mcq_questions(text):
     
     return questions
 
+# def parse_tf_questions(text):
+#     """Parse True/False questions from text"""
+#     questions = []
+#     lines = text.strip().split('\n')
+    
+#     for line in lines:
+#         line = line.strip()
+#         if not line:
+#             continue
+            
+#         # Check if it's a question line
+#         if line.startswith('Question') or (line[0].isdigit() and '.' in line[:3]):
+#             question_text = line.split(':', 1)[-1].strip() if ':' in line else line
+#             # Remove question number if present
+#             if question_text[0].isdigit():
+#                 question_text = question_text.split('.', 1)[-1].strip()
+#             questions.append({
+#                 'question': question_text,
+#                 'options': [('True', 'True'), ('False', 'False')]
+#             })
+    
+#     return questions
+
 def parse_tf_questions(text):
-    """Parse True/False questions from text"""
+    """Parse True/False questions from text and force clean options"""
     questions = []
     lines = text.strip().split('\n')
     
@@ -213,19 +319,20 @@ def parse_tf_questions(text):
         line = line.strip()
         if not line:
             continue
-            
-        # Check if it's a question line
-        if line.startswith('Question') or (line[0].isdigit() and '.' in line[:3]):
+        
+        # Identify question line
+        if line.lower().startswith('question') or (line[0].isdigit() and '.' in line[:3]):
             question_text = line.split(':', 1)[-1].strip() if ':' in line else line
-            # Remove question number if present
-            if question_text[0].isdigit():
-                question_text = question_text.split('.', 1)[-1].strip()
+            # Remove leftover "True or False:" or other extra formatting
+            question_text = question_text.replace('True or False:', '').replace('True)True', '').replace('False)False', '').strip()
+            
             questions.append({
                 'question': question_text,
-                'options': [('True', 'True'), ('False', 'False')]
+                'options': [('True','True'), ('False','False')]  # Force clean options
             })
     
     return questions
+
 
 # Topics list
 TOPICS = [
@@ -317,10 +424,28 @@ Generate the quiz now (without showing correct answers):"""
                     else:
                         prompt = f"""Based on network security concepts, generate {st.session_state.num_questions} true/false questions {topic_text}.
 
+Requirements:
+1. Each question should start with 'Question X:'.
+2. Do NOT include 'True or False:' in the question.
+3. Do NOT include letters, parentheses, or repeated words.
+4. The options line should be exactly: True    False
+5. Do NOT show the correct answer.
+
 Format:
 Question 1: [statement]
+Options: True    False
 
-DO NOT show the answers. Generate the quiz now:"""
+Question 2: [statement]
+Options: True    False
+
+Generate the quiz now:"""
+
+#                         prompt = f"""Based on network security concepts, generate {st.session_state.num_questions} true/false questions {topic_text}.
+
+# Format:
+# Question 1: [statement]
+
+# DO NOT show the answers. Generate the quiz now:"""
                     
                     # Use PDF content as context
                     full_prompt = f"Context from network security materials:\n{pdf_content[:3000]}\n\n{prompt}"
@@ -375,7 +500,7 @@ DO NOT show the answers. Generate the quiz now:"""
                     for col_idx, (opt_letter, opt_text) in enumerate(q['options']):
                         with cols[col_idx]:
                             if st.button(
-                                f"{opt_letter}) {opt_text}",
+                                f"{opt_text}",
                                 key=f"q_{idx}_opt_{opt_letter}",
                                 use_container_width=True
                             ):
@@ -389,70 +514,121 @@ DO NOT show the answers. Generate the quiz now:"""
         
         else:
             # Get correct answers first
+            # Evaluate only if not already evaluated
             if not st.session_state.correct_answers:
                 with st.spinner("Evaluating your answers..."):
                     try:
-                        # Build answer string
-                        user_ans_str = ", ".join([f"{i+1}. {st.session_state.user_answers.get(i, 'No answer')}" 
-                                                  for i in range(len(st.session_state.parsed_questions))])
-                        
+                        user_ans_str = ", ".join([
+                            f"{i+1}. {st.session_state.user_answers.get(i, 'No answer')}" 
+                            for i in range(len(st.session_state.parsed_questions))
+                        ])
+            
                         eval_prompt = f"""You are a quiz evaluator. 
 
-Here are the quiz questions:
-{st.session_state.quiz_data['questions']}
+        Here are the quiz questions:
+        {st.session_state.quiz_data['questions']}
 
-The user's answers are:
-{user_ans_str}
+        The user's answers are:
+        {user_ans_str}
 
-For each question, provide ONLY:
-1. The correct answer (just the letter for MCQ or True/False)
-2. A brief explanation (one sentence)
+        For each question, provide ONLY:
+        1. The correct answer (just the letter for MCQ or True/False)
+        2. A brief explanation (one sentence)
 
-Format your response as:
-Question 1: Correct Answer: [X], Explanation: [brief explanation]
-Question 2: Correct Answer: [X], Explanation: [brief explanation]
-etc."""
-                        
+        Format your response as:
+        Question 1: Correct Answer: [X], Explanation: [brief explanation]
+        Question 2: Correct Answer: [X], Explanation: [brief explanation]
+        etc."""
+                    
                         evaluation = model.invoke(eval_prompt)
+
+                        # Regex to parse "Question #: Correct Answer: [X], Explanation: ..."
+                        pattern = r'Question\s*\d+:\s*Correct Answer:\s*\[?([A-DTFa-dtf]+)\]?\s*,?\s*Explanation:\s*(.+)'
                         
-                        # Parse correct answers
-                        for idx, line in enumerate(evaluation.split('\n')):
-                            if 'Correct Answer:' in line:
-                                try:
-                                    correct = line.split('Correct Answer:')[1].split(',')[0].strip()
-                                    # Extract just the letter/answer
-                                    correct = correct.replace('[', '').replace(']', '').strip()
-                                    if correct and correct[0] in ['A', 'B', 'C', 'D', 'T', 'F']:
-                                        st.session_state.correct_answers[idx] = correct[0]
-                                except:
-                                    pass
+                        for match in re.finditer(pattern, evaluation):
+                            correct_ans = match.group(1).strip().upper()
+                            explanation = match.group(2).strip()
+                            
+                            # Determine question index by order
+                            idx = len(st.session_state.correct_answers)
+                            
+                            st.session_state.correct_answers[idx] = correct_ans
+                            st.session_state.explanations[idx] = explanation
+                            
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error evaluating quiz: {e}")
+#             if not st.session_state.correct_answers:
+#                 with st.spinner("Evaluating your answers..."):
+#                     try:
+#                         # Build answer string
+#                         user_ans_str = ", ".join([f"{i+1}. {st.session_state.user_answers.get(i, 'No answer')}" 
+#                                                   for i in range(len(st.session_state.parsed_questions))])
+                        
+#                         eval_prompt = f"""You are a quiz evaluator. 
+
+# Here are the quiz questions:
+# {st.session_state.quiz_data['questions']}
+
+# The user's answers are: 
+# {user_ans_str}
+
+# For each question, provide ONLY:
+# 1. The correct answer (just the letter for MCQ or True/False)
+# 2. A brief explanation (one sentence)
+
+# Format your response as:
+# Question 1: Correct Answer: [X], Explanation: [brief explanation]
+# Question 2: Correct Answer: [X], Explanation: [brief explanation]
+# etc."""
+                        
+#                         evaluation = model.invoke(eval_prompt)
+                        
+#                         # Parse correct answers
+#                         for idx, line in enumerate(evaluation.split('\n')):
+#                             if 'Correct Answer:' in line:
+#                                 try:
+#                                     correct = line.split('Correct Answer:')[1].split(',')[0].strip()
+#                                     # Extract just the letter/answer
+#                                     correct = correct.replace('[', '').replace(']', '').strip()
+#                                     if correct and correct[0] in ['A', 'B', 'C', 'D', 'T', 'F']:
+#                                         st.session_state.correct_answers[idx] = correct[0]
+#                                 except:
+#                                     pass
+#                     except Exception as e:
+#                         st.error(f"Error: {e}")
             
             # Display results with color coding
             st.markdown("### Quiz Results")
-            
+
             correct_count = 0
+
             for idx, q in enumerate(st.session_state.parsed_questions):
                 user_answer = st.session_state.user_answers.get(idx, 'No answer')
                 correct_answer = st.session_state.correct_answers.get(idx, '?')
-                is_correct = user_answer == correct_answer
-                
+
+                # Normalize for both MCQ and True/False
+                user_answer_norm = str(user_answer).strip().lower()
+                correct_answer_norm = str(correct_answer).strip().lower()
+
+                is_correct = user_answer_norm == correct_answer_norm
                 if is_correct:
                     correct_count += 1
-                
+
                 # Display question
                 st.markdown(f"""
                 <div class="question-card">
                     <div class="question-text">Question {idx + 1}: {q['question']}</div>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                # Display options with color coding
+
+                # Display options
                 for opt_letter, opt_text in q['options']:
-                    is_user_choice = opt_letter == user_answer
-                    is_correct_answer = opt_letter == correct_answer
-                    
+
+                    opt_letter_norm = str(opt_letter).strip().lower()
+
+                    is_user_choice = opt_letter_norm == user_answer_norm
+                    is_correct_answer = opt_letter_norm == correct_answer_norm
+
                     if is_correct_answer:
                         style_class = "correct-answer"
                         indicator = " ✓ Correct Answer"
@@ -462,14 +638,55 @@ etc."""
                     else:
                         style_class = "neutral-option"
                         indicator = ""
-                    
+
                     st.markdown(f"""
                     <div class="{style_class}">
-                        <strong>{opt_letter})</strong> {opt_text}{indicator}
+                        {opt_text} {indicator}
                     </div>
                     """, unsafe_allow_html=True)
-                
+
                 st.markdown("<br>", unsafe_allow_html=True)
+
+            # st.markdown("### Quiz Results")
+            
+            # correct_count = 0
+            # for idx, q in enumerate(st.session_state.parsed_questions):
+            #     user_answer = st.session_state.user_answers.get(idx, 'No answer')
+            #     correct_answer = st.session_state.correct_answers.get(idx, '?')
+            #     is_correct = user_answer == correct_answer
+                
+            #     if is_correct:
+            #         correct_count += 1
+                
+            #     # Display question
+            #     st.markdown(f"""
+            #     <div class="question-card">
+            #         <div class="question-text">Question {idx + 1}: {q['question']}</div>
+            #     </div>
+            #     """, unsafe_allow_html=True)
+                
+            #     # Display options with color coding
+            #     for opt_letter, opt_text in q['options']:
+            #         is_user_choice = opt_letter == user_answer
+            #         is_correct_answer = opt_letter == correct_answer
+                    
+            #         if is_correct_answer:
+            #             style_class = "correct-answer"
+            #             indicator = " ✓ Correct Answer"
+            #         elif is_user_choice and not is_correct:
+            #             style_class = "wrong-answer"
+            #             indicator = " ✗ Your Answer"
+            #         else:
+            #             style_class = "neutral-option"
+            #             indicator = ""
+                    
+            #         st.markdown(f"""
+            #         <div class="{style_class}">
+            #             {opt_text} {indicator}
+            #         </div>
+            #         """, unsafe_allow_html=True)
+                
+            #     st.markdown("<br>", unsafe_allow_html=True)
             
             # Show score
             total = len(st.session_state.parsed_questions)
@@ -504,6 +721,11 @@ elif page == "Ask Questions":
         if submitted and question:
             with st.spinner("Thinking..."):
                 try:
+                    answer, sources = answer_question(question, use_web=True)
+                except Exception as e:
+                    st.error(f" Error: {e}")
+                    st.stop()
+                try:
                     prompt = f"""Based on network security concepts, answer this question:
 
 Question: {question}
@@ -512,7 +734,41 @@ Context from materials:
 {pdf_content[:2000]}
 
 Provide a clear, detailed answer:"""
-                    
+                    prompt = f"""You are an expert assistant. Answer the user’s question clearly and concisely. 
+Do NOT include any reference links or sources inside the answer text. 
+After providing the answer, list all sources under a separate section titled 'References'.
+
+Format:
+
+<Your answer here, clean and free of inline references> {answer}
+
+References:
+- <source 1>
+- <source 2>
+- <source 3>
+{sources}"""
+#                     prompt = f"""
+# You are an expert assistant. Answer the user’s question clearly and concisely. 
+
+# Rules:
+# 1. Provide a clear answer based on the context (PDF content or knowledge you have). 
+# 2. Do NOT include reference links inside the answer text.
+# 3. If there is no relevant information in the context, provide a concise answer based on general knowledge.
+# 4. In the 'References' section, always include relevant links:
+#    - Strictly use only the sources provided in the context or RAG system if available.
+#    - If no sources are available, include reputable external references, preferably Wikipedia or official sites.
+
+# Format:
+
+# Answer:
+# <Your answer here, clean and free of inline references> {answer}
+
+# References:
+#  - <source 1>
+#  - <source 2>
+#  - <source 3>
+#  if {sources} else '- https://en.wikipedia.org/wiki/' """
+
                     answer = model.invoke(prompt)
                     st.session_state.chat_history.append((question, answer))
                     st.rerun()
